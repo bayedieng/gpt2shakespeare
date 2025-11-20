@@ -21,55 +21,41 @@ class PosEncoding(nn.Module):
 
     def forward(self, x):
         x = x + self.pe[: x.size(1)]
-
-
-class Attention(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.n_heads = N_HEADS
-        self.d_model = D_MODEL
-        self.d_k = self.d_model // self.n_heads
-        self.linear_q = nn.Linear(self.d_model, self.d_model)
-        self.linear_k = nn.Linear(self.d_model, self.d_model)
-        self.linear_v = nn.Linear(self.d_model, self.d_model)
-        self.linear_final_layer = nn.Linear(self.d_model, self.d_model)
-        self.linear_w_out = nn.Linear(self.d_model, self.d_model)
-
-    def split(self, x):
-        """
-        input -> [batch_size, seq_len, d_model]
-        return -> [batch_size, head, seq_len, d_k]
-        """
-        batch_size, seq_len, d_model = x.size()
-        x = x.view(batch_size, self.n_heads, seq_len, self.d_k)
         return x
 
-    def attention(self, q, k, v):
-        k = k.transpose(2, 3)
-        qk_mul = torch.matmul(q, k)
-        attn_out = F.softmax(torch.matmul(qk_mul / math.sqrt(self.d_k), v), dim=-1)
-        return attn_out
+class Attention(nn.Module):
+      def __init__(self):
+          super().__init__()
+          self.n_heads = N_HEADS
+          self.d_model = D_MODEL
+          self.d_k = self.d_model // self.n_heads
+          self.linear_q = nn.Linear(self.d_model, self.d_model)
+          self.linear_k = nn.Linear(self.d_model, self.d_model)
+          self.linear_v = nn.Linear(self.d_model, self.d_model)
+          self.linear_w_out = nn.Linear(self.d_model, self.d_model)
 
-    def forward(self, x):
-        # [batch_size, seq_len, d_model]
-        q, k, v = self.linear_q(x), self.linear_k(x), self.linear_v(x)
+      def split(self, x):
+          batch_size, seq_len, _ = x.size()
+          return x.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
 
-        # split into heads
-        q, k, v = self.split(q), self.split(k), self.split(v)
+      def attention(self, q, k, v):
+          scores = torch.matmul(q, k.transpose(2, 3)) / math.sqrt(self.d_k)
+          mask = torch.tril(
+              torch.ones((q.size(-2), q.size(-2)), device=q.device, dtype=torch.bool)
+          ).unsqueeze(0).unsqueeze(0)
+          scores = scores.masked_fill(~mask, float("-inf"))
+          weights = F.softmax(scores, dim=-1)
+          return torch.matmul(weights, v)
 
-        # apply attention and concat output
-        attn_out = self.attention(q, k, v)
-
-        # concat out as multi-head
-        batch_size, n_heads, seq_len, d_k = attn_out.size()
-        d_model = n_heads * d_k
-        multi_head = attn_out.view(batch_size, seq_len, d_model)
-
-        # project into the two final layers
-        multi_head = self.linear_w_out(multi_head)
-        out = self.linear_final_layer(multi_head)
-        return out
-
+      def forward(self, x):
+          q, k, v = self.linear_q(x), self.linear_k(x), self.linear_v(x)
+          q, k, v = self.split(q), self.split(k), self.split(v)
+          attn_out = self.attention(q, k, v)
+          batch_size, _, seq_len, d_k = attn_out.size()
+          d_model = self.n_heads * d_k
+          multi_head = attn_out.transpose(1, 2).contiguous().view(batch_size, seq_len,
+  d_model)
+          return self.linear_w_out(multi_head)
 
 class FFN(nn.Module):
     def __init__(self):
@@ -82,3 +68,4 @@ class FFN(nn.Module):
         x = F.relu(x)
         x = self.l2(x)
         return x
+
