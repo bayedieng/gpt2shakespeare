@@ -2,60 +2,63 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from tokenizers import Tokenizer
+
+tokenizer = Tokenizer.from_file("tokenizer.json")
 
 N_HEADS = 12
 D_MODEL = 768
 D_FF = D_MODEL * 4
 N_LAYERS = 4
-
+P_DROPOUT = 0.1
+VOCAB_SIZE = tokenizer.get_vocab_size()
 
 class PosEncoding(nn.Module):
-    def __init__(self):
+    def __init__(self, max_len: int = 2048):
         super().__init__()
-        position = torch.arange(5000)  # 5000 from the torch docs
-        div_term = torch.exp(torch.arange(0, D_MODEL))
-        pe = torch.zeros(5000, 1, D_MODEL)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, D_MODEL, 2) * (-math.log(10000.0) / D_MODEL))
+        pe = torch.zeros(1, max_len, D_MODEL)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
         self.register_buffer("pe", pe)
 
     def forward(self, x):
-        x = x + self.pe[: x.size(1)]
-        return x
+        seq_len = x.size(1)
+        return x + self.pe[:, :seq_len]
 
 class Attention(nn.Module):
-      def __init__(self):
-          super().__init__()
-          self.n_heads = N_HEADS
-          self.d_model = D_MODEL
-          self.d_k = self.d_model // self.n_heads
-          self.linear_q = nn.Linear(self.d_model, self.d_model)
-          self.linear_k = nn.Linear(self.d_model, self.d_model)
-          self.linear_v = nn.Linear(self.d_model, self.d_model)
-          self.linear_w_out = nn.Linear(self.d_model, self.d_model)
+    def __init__(self):
+        super().__init__()
+        self.n_heads = N_HEADS
+        self.d_model = D_MODEL
+        self.d_k = self.d_model // self.n_heads
+        self.linear_q = nn.Linear(self.d_model, self.d_model)
+        self.linear_k = nn.Linear(self.d_model, self.d_model)
+        self.linear_v = nn.Linear(self.d_model, self.d_model)
+        self.linear_w_out = nn.Linear(self.d_model, self.d_model)
 
-      def split(self, x):
-          batch_size, seq_len, _ = x.size()
-          return x.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+    def split(self, x):
+        batch_size, seq_len, _ = x.size()
+        return x.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
 
-      def attention(self, q, k, v):
-          scores = torch.matmul(q, k.transpose(2, 3)) / math.sqrt(self.d_k)
-          mask = torch.tril(
-              torch.ones((q.size(-2), q.size(-2)), device=q.device, dtype=torch.bool)
-          ).unsqueeze(0).unsqueeze(0)
-          scores = scores.masked_fill(~mask, float("-inf"))
-          weights = F.softmax(scores, dim=-1)
-          return torch.matmul(weights, v)
+    def attention(self, q, k, v):
+        scores = torch.matmul(q, k.transpose(2, 3)) / math.sqrt(self.d_k)
+        mask = torch.tril(
+            torch.ones((q.size(-2), q.size(-2)), device=q.device, dtype=torch.bool)
+        ).unsqueeze(0).unsqueeze(0)
+        scores = scores.masked_fill(~mask, float("-inf"))
+        weights = F.softmax(scores, dim=-1)
+        return torch.matmul(weights, v)
 
-      def forward(self, x):
-          q, k, v = self.linear_q(x), self.linear_k(x), self.linear_v(x)
-          q, k, v = self.split(q), self.split(k), self.split(v)
-          attn_out = self.attention(q, k, v)
-          batch_size, _, seq_len, d_k = attn_out.size()
-          d_model = self.n_heads * d_k
-          multi_head = attn_out.transpose(1, 2).contiguous().view(batch_size, seq_len,
-  d_model)
-          return self.linear_w_out(multi_head)
+    def forward(self, x):
+        q, k, v = self.linear_q(x), self.linear_k(x), self.linear_v(x)
+        q, k, v = self.split(q), self.split(k), self.split(v)
+        attn_out = self.attention(q, k, v)
+        batch_size, _, seq_len, d_k = attn_out.size()
+        d_model = self.n_heads * d_k
+        multi_head = attn_out.transpose(1, 2).contiguous().view(batch_size, seq_len, d_model)
+        return self.linear_w_out(multi_head)
 
 class FFN(nn.Module):
     def __init__(self):
@@ -65,7 +68,30 @@ class FFN(nn.Module):
 
     def forward(self, x):
         x = self.l1(x)
-        x = F.relu(x)
+        x = F.gelu(x)
         x = self.l2(x)
         return x
 
+class Block(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.ffn = FFN()
+        self.pos_encoding = PosEncoding()
+        self.layer_norm1 = nn.LayerNorm(D_MODEL)
+        self.layer_norm2 = nn.LayerNorm(D_MODEL)
+        self.dropout = nn.Dropout(P_DROPOUT)
+
+    def forward(self, x):
+        attn_out = self.attention(self.layer_norm1(x))
+        x = x + self.dropout(attn_out)
+        ffn_out = self.ffn(self.layer_norm2(x))
+        x = x + self.dropout(ffn_out)
+        return x
+
+class Gpt2Shakespeare(nn.Module):
+    def __init__(self):
+        self.text_embd = nn.Embedding(VOCAB_SIZE, D_MODEL)
+        self.pos_encoding = PosEncoding()
+        self.blocks = nn.ModuleList([Block() for i in range(N_LAYERS)])
+
+        
