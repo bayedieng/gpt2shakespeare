@@ -11,21 +11,18 @@ D_MODEL = 768
 D_FF = D_MODEL * 4
 N_LAYERS = 4
 P_DROPOUT = 0.1
+MAX_SEQ_LEN = 2048
 VOCAB_SIZE = tokenizer.get_vocab_size()
 
-class PosEncoding(nn.Module):
-    def __init__(self, max_len: int = 2048):
+class LearnedPositionalEmbedding(nn.Module):
+    def __init__(self, max_len: int = MAX_SEQ_LEN):
         super().__init__()
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, D_MODEL, 2) * (-math.log(10000.0) / D_MODEL))
-        pe = torch.zeros(1, max_len, D_MODEL)
-        pe[0, :, 0::2] = torch.sin(position * div_term)
-        pe[0, :, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe)
+        self.pos_emb = nn.Embedding(max_len, D_MODEL)
 
     def forward(self, x):
         seq_len = x.size(1)
-        return x + self.pe[:, :seq_len]
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        return self.pos_emb(positions)
 
 class Attention(nn.Module):
     def __init__(self):
@@ -94,14 +91,15 @@ class Gpt2Shakespeare(nn.Module):
     def __init__(self):
         super().__init__()
         self.text_embd = nn.Embedding(VOCAB_SIZE, D_MODEL)
-        self.pos_encoding = PosEncoding()
+        self.pos_encoding = LearnedPositionalEmbedding()
+        self.emb_dropout = nn.Dropout(P_DROPOUT)
         self.blocks = nn.ModuleList([Block() for i in range(N_LAYERS)])
         self.final_norm = nn.LayerNorm(D_MODEL)
         self.final_layer = nn.Linear(D_MODEL, VOCAB_SIZE)
 
     def forward(self, x):
-        x = self.text_embd(x)
-        x = self.pos_encoding(x)
+        x = self.text_embd(x) + self.pos_encoding(x)
+        x = self.emb_dropout(x)
         for block in self.blocks:
             x = block.forward(x)
 

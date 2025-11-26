@@ -29,12 +29,12 @@ class Gpt2ShakespeareDatset(Dataset):
         B = tensors.numel() // window_size
         trimmed_tensors = tensors[:B * window_size]
         trimmed_tensors = trimmed_tensors.view(B, window_size)
-        self.x = trimmed_tensors
+        # Inputs are all but last token in each window; targets are next tokens
+        self.x = trimmed_tensors[:, :-1]
         self.y = trimmed_tensors[:, 1:]
 
     def __len__(self):
-        return len(self.data)
+        return len(self.x)
 
     def __getitem__(self, index):
         return self.x[index], self.y[index]
-
