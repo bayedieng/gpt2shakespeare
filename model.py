@@ -37,7 +37,8 @@ class Attention(nn.Module):
         self.linear_k = nn.Linear(self.d_model, self.d_model)
         self.linear_v = nn.Linear(self.d_model, self.d_model)
         self.linear_w_out = nn.Linear(self.d_model, self.d_model)
-
+        self.dropout = nn.Dropout(P_DROPOUT)
+        
     def split(self, x):
         batch_size, seq_len, _ = x.size()
         return x.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
@@ -49,6 +50,7 @@ class Attention(nn.Module):
         ).unsqueeze(0).unsqueeze(0)
         scores = scores.masked_fill(~mask, float("-inf"))
         weights = F.softmax(scores, dim=-1)
+        weights = self.dropout(weights)
         return torch.matmul(weights, v)
 
     def forward(self, x):
@@ -76,7 +78,7 @@ class Block(nn.Module):
     def __init__(self):
         super().__init__()
         self.ffn = FFN()
-        self.pos_encoding = PosEncoding()
+        self.attention = Attention()
         self.layer_norm1 = nn.LayerNorm(D_MODEL)
         self.layer_norm2 = nn.LayerNorm(D_MODEL)
         self.dropout = nn.Dropout(P_DROPOUT)
@@ -90,8 +92,19 @@ class Block(nn.Module):
 
 class Gpt2Shakespeare(nn.Module):
     def __init__(self):
+        super().__init__()
         self.text_embd = nn.Embedding(VOCAB_SIZE, D_MODEL)
         self.pos_encoding = PosEncoding()
         self.blocks = nn.ModuleList([Block() for i in range(N_LAYERS)])
+        self.final_norm = nn.LayerNorm(D_MODEL)
+        self.final_layer = nn.Linear(D_MODEL, VOCAB_SIZE)
 
-        
+    def forward(self, x):
+        x = self.text_embd(x)
+        x = self.pos_encoding(x)
+        for block in self.blocks:
+            x = block.forward(x)
+
+        x = self.final_norm(x)
+        x = self.final_layer(x)
+        return x
