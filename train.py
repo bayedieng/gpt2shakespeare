@@ -8,7 +8,7 @@ dataset = Gpt2ShakespeareDatset()
 train_len = int(0.8 * len(dataset))
 test_len = len(dataset) - train_len
 batch_size = 16
-num_epochs = 10
+num_epochs = 50
 
 g = torch.Generator().manual_seed(42)
 trainset, testset = random_split(dataset, [train_len, test_len], g)
